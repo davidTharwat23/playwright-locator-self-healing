@@ -1,0 +1,65 @@
+{
+    "name": "playwright-locator-self-healing",
+    "version": "0.1.0",
+    "description": "Conservative, safety-first self-healing for Playwright locators. Heals broken locators without hiding real E2E/business-flow failures.",
+    "keywords": [
+        "playwright",
+        "self-healing",
+        "locator",
+        "e2e",
+        "testing",
+        "automation"
+    ],
+    "license": "MIT",
+    "author": "",
+    "homepage": "https://github.com/your-org/playwright-locator-self-healing#readme",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/your-org/playwright-locator-self-healing.git"
+    },
+    "bugs": {
+        "url": "https://github.com/your-org/playwright-locator-self-healing/issues"
+    },
+    "type": "commonjs",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "require": "./dist/index.js",
+            "default": "./dist/index.js"
+        },
+        "./reporter": {
+            "types": "./dist/reporting/reporter.d.ts",
+            "require": "./dist/reporting/reporter.js",
+            "default": "./dist/reporting/reporter.js"
+        }
+    },
+    "files": [
+        "dist",
+        "README.md",
+        "LICENSE"
+    ],
+    "scripts": {
+        "build": "tsc -p tsconfig.build.json",
+        "typecheck": "tsc --noEmit",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "prepublishOnly": "npm run build"
+    },
+    "peerDependencies": {
+        "@playwright/test": ">=1.40.0"
+    },
+    "devDependencies": {
+        "@playwright/test": ">=1.40.0",
+        "@types/node": "^20.0.0",
+        "typescript": "^5.4.0",
+        "vitest": "^2.1.0"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
+    "engines": {
+        "node": ">=18"
+    }
+}
