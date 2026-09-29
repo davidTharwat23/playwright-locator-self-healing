@@ -12,6 +12,22 @@ original error surface.
 
 ---
 
+## Features
+
+- **Automatic locator healing** — on a failed locator action, finds a high-confidence, unique alternative in the live DOM and retries the original action on it.
+- **Failure classification first** — distinguishes a genuine *locator failure* from an *E2E/business-flow failure* (assertion, API/backend error, auth failure, disabled element, ambiguous match). Only locator failures are ever healed.
+- **Conservative safety gates** — a candidate is used only if it clears a confidence threshold, is unambiguous, and resolves to **exactly one visible element**. Never binds to a look-alike.
+- **Never hides real failures** — the original locator and error are always preserved and re-thrown when healing is unsafe or fails.
+- **True feature flag** — `SELF_HEALING=false` (or unset) is a byte-for-byte no-op: identical to plain Playwright, zero added latency on the happy path.
+- **One-import integration** — swap `@playwright/test` for this package, or layer it onto your existing extended `test`.
+- **Weighted signal scoring** — ranks candidates on test id, id, role, accessible name, text, label, placeholder, type, and tag, with a hard type/tag gate (a button never heals into a div).
+- **Healing history (hints)** — remembers successful heals to speed up future breaks; a remembered selector still must pass every safety gate, so stale hints can't mis-heal.
+- **Structured CI report** — aggregates every heal attempt into `.healing/healing-report.json` via a Playwright reporter; readable in any CI (GitLab, GitHub Actions, Jenkins).
+- **Clear logging** — every attempt prints a readable `[SELF-HEALING]` block (SUCCESS / HEALING_FAILED / E2E_FLOW_FAILURE).
+- **Zero runtime dependencies** — `@playwright/test` is a peer dependency; nothing else is pulled in.
+
+---
+
 ## Install
 
 ```bash
@@ -58,6 +74,41 @@ import { SelfHealing } from 'playwright-locator-self-healing';
 
 const selfHealing = new SelfHealing({ enabled: process.env.SELF_HEALING === 'true' });
 export const test = selfHealing.extendTest(base);
+```
+
+## Usage scenarios
+
+**A broken locator gets healed (and the test continues):**
+
+```typescript
+import { test } from 'playwright-locator-self-healing';
+
+test('submit works even after the testid was renamed', async ({ page }) => {
+    await page.goto('/checkout');
+    // The app renamed data-testid="pay" but the button still has role=button,
+    // name "Pay now". The engine finds the unique match and retries the click.
+    await page.getByTestId('pay').click();
+});
+```
+
+**A real failure is NOT healed (the original error surfaces):**
+
+```typescript
+import { test, expect } from 'playwright-locator-self-healing';
+
+test('assertion failures are never masked', async ({ page }) => {
+    await page.goto('/dashboard');
+    // The locator resolves fine; the assertion is wrong. This is a business
+    // failure, so self-healing does nothing and the assertion error is thrown.
+    await expect(page.getByTestId('balance')).toHaveText('WRONG VALUE');
+});
+```
+
+**Turn it off and it behaves exactly like plain Playwright:**
+
+```bash
+npx playwright test          # SELF_HEALING unset -> true no-op
+SELF_HEALING=true npx playwright test   # healing active
 ```
 
 ## Configuration
