@@ -132,6 +132,87 @@ const selfHealing = new SelfHealing({
 });
 ```
 
+## How it works
+
+The package wraps Playwright's `page` in a transparent proxy. Every locator
+action (`click`, `fill`, `check`, …) runs **normally first** — there is zero
+overhead and zero behavioural change on the happy path. Healing only engages
+**when an action fails**, and runs this pipeline:
+
+```
+page.getByTestId('login-button').click()
+        │
+        ▼
+  run the REAL Playwright action ── succeeds ──▶ done (no healing, no overhead)
+        │ fails
+        ▼
+  [1] Classify the failure
+        ├─ not a locator failure (assertion, API 4xx/5xx, auth,
+        │   disabled element, ambiguous match, anything unknown)
+        │        └──────────────▶ rethrow the ORIGINAL error  (never healed)
+        │
+        └─ locator failure (element not found / not resolvable)
+                 │
+                 ▼
+  [2] Snapshot the live DOM  → collect candidate elements + their signals
+                 │              (testId, id, role, accessible name, text,
+                 │               label, placeholder, type, tag)
+                 ▼
+  [3] Score each candidate vs. the ORIGINAL locator's intent
+                 │              (weighted similarity; a button never
+                 │               heals into a div — hard type gate)
+                 ▼
+  [4] Safety gates — a candidate is used ONLY if it:
+        • clears the confidence threshold (default 0.85), AND
+        • is not tied with another candidate (ambiguity gate), AND
+        • resolves to EXACTLY ONE visible element (uniqueness gate)
+                 │
+        ┌────────┴─────────┐
+     none pass          one passes
+        │                  │
+        ▼                  ▼
+  rethrow ORIGINAL   [5] Retry the SAME action on the healed locator
+  error (give up)          ├─ action succeeds ─▶ SUCCESS: test continues,
+                           │                      heal logged + remembered
+                           └─ action fails ────▶ rethrow the ORIGINAL error
+```
+
+Key guarantees at every branch: the **original locator and error are always
+preserved**, a heal only counts when the retried action **actually works**, and
+anything that isn't positively a locator problem is **never touched**. That is
+what keeps self-healing from hiding real product or test failures.
+
+### Worked example
+
+Your test does:
+
+```typescript
+await page.getByTestId('login-button').click();
+```
+
+The app was refactored and the button's `data-testid` changed, so Playwright
+can no longer find it and the click fails. The engine:
+
+1. Confirms this is a **locator failure** (not an assertion/API/auth problem).
+2. Snapshots the DOM and finds a button whose signals still strongly match the
+   original intent — same role `button`, accessible name "Login".
+3. Scores it ≥ 0.85 and confirms it is the **only** visible match.
+4. Re-runs `click()` on it — which succeeds.
+
+It logs and continues:
+
+```
+[SELF-HEALING]
+Original locator: getByTestId(login-button)
+Original action:  click()
+Alternative locator: role=button[name="Login"]
+Confidence: 92%
+Result: SUCCESS
+```
+
+If that button were genuinely gone, or the failure were a real assertion/API
+error, nothing would be healed and the test would fail exactly as before.
+
 ## How it decides (safety model)
 
 On a failed action the engine runs a strict pipeline:
