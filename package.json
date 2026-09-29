@@ -11,14 +11,14 @@
         "automation"
     ],
     "license": "MIT",
-    "author": "",
-    "homepage": "https://github.com/your-org/playwright-locator-self-healing#readme",
+    "author": "DavidTharwat",
+    "homepage": "https://github.com/davidTharwat23/playwright-locator-self-healing#readme",
     "repository": {
         "type": "git",
-        "url": "https://github.com/your-org/playwright-locator-self-healing.git"
+        "url": "git+https://github.com/davidTharwat23/playwright-locator-self-healing.git"
     },
     "bugs": {
-        "url": "https://github.com/your-org/playwright-locator-self-healing/issues"
+        "url": "https://github.com/davidTharwat23/playwright-locator-self-healing/issues"
     },
     "type": "commonjs",
     "main": "./dist/index.js",
