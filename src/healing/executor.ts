@@ -23,6 +23,7 @@ import { signalsFromConstruction } from '../locator/signals';
 import type { HealingLogger } from '../logging/logger';
 import type { FailedActionContext, HealingHook, LocatorConstruction } from '../playwright/healingHook';
 import { selectSafeCandidate, ScorableCandidate } from '../scoring/safetyGate';
+import { createDeadline, Deadline, HealingDeadlineExceeded } from './deadline';
 
 /** Sink that receives a structured entry for every heal attempt. */
 export interface ReportSink {
@@ -89,96 +90,209 @@ export function createHealingExecutor(deps: ExecutorDeps): HealingHook {
 
             void reason;
 
-            // 2. Derive intent + snapshot the live DOM + generate candidates.
-            const original: SignalProfile = signalsFromConstruction(context.descriptor);
-            const snapshot = await captureDomSnapshot(context.page);
-            const generated = generateCandidates(snapshot.filter((el) => el.visible));
+            // Overall healing budget. Every live-page operation below (snapshot,
+            // uniqueness probes, retry) is raced against this single deadline so
+            // healing cannot outlast healTimeoutMs regardless of how slow any one
+            // operation is. This is INDEPENDENT of Playwright's test/action
+            // timeouts and only applies on the post-failure healing path — the
+            // normal success path never reaches here, so it adds zero overhead.
+            const deadline = createDeadline(deps.config.healTimeoutMs);
 
-            // Bias: if history has a known-good selector for this key, try it
-            // first as an extra candidate. It still must pass the gate.
-            const candidates: ScorableCandidate[] = generated.map((g) => ({
-                selector: g.selector,
-                signals: g.element,
-            }));
-            const historical = deps.history?.lookup(locatorKey);
-            if (historical && !candidates.some((c) => c.selector === historical)) {
-                candidates.unshift({ selector: historical, signals: original });
-            }
-
-            // 3. Score + safety gate (threshold, ambiguity, uniqueness).
-            const safe = await selectSafeCandidate(
-                original,
-                candidates,
-                (selector) => countVisible(context.page, selector),
-                { confidenceThreshold: deps.config.confidenceThreshold },
-            );
-
-            if (!safe) {
-                deps.logger.healingFailed({ originalSelector, action: context.action });
-                emit(deps.report, {
-                    timestamp: new Date().toISOString(),
+            try {
+                return await runHealingPipeline(context, {
+                    deps,
+                    deadline,
+                    classification,
                     locatorKey,
                     originalSelector,
-                    action: context.action,
-                    classification,
-                    outcome: HealingOutcome.HEALING_FAILED,
-                    originalError: messageOf(originalError),
+                    originalError,
+                    buildLocator,
+                    countVisible,
                 });
-                throw originalError;
-            }
-
-            // 4. Retry the REAL action on the healed locator, bounded by retryCount.
-            const healedLocator = buildLocator(context.page, safe.selector);
-            const attempts = Math.max(1, deps.config.retryCount);
-            let lastRetryError: unknown;
-
-            for (let attempt = 0; attempt < attempts; attempt += 1) {
-                try {
-                    const result = await context.invoke(healedLocator, context.args);
-                    // SUCCESS — the action actually worked on the healed element.
-                    deps.logger.success({
-                        originalSelector,
-                        action: context.action,
-                        healedSelector: safe.selector,
-                        confidence: safe.confidence,
-                    });
-                    deps.history?.remember(locatorKey, safe.selector);
+            } catch (healError) {
+                // The budget elapsed mid-pipeline. Report HEALING_FAILED and
+                // rethrow the ORIGINAL error promptly; any still-in-flight browser
+                // work is now irrelevant to the test outcome.
+                if (healError instanceof HealingDeadlineExceeded) {
+                    deps.logger.healingFailed({ originalSelector, action: context.action });
                     emit(deps.report, {
                         timestamp: new Date().toISOString(),
                         locatorKey,
                         originalSelector,
                         action: context.action,
                         classification,
-                        outcome: HealingOutcome.SUCCESS,
-                        healedSelector: safe.selector,
-                        confidence: safe.confidence,
+                        outcome: HealingOutcome.HEALING_FAILED,
                         originalError: messageOf(originalError),
                     });
-                    return result;
-                } catch (retryError) {
-                    lastRetryError = retryError;
+                    throw originalError;
                 }
+                throw healError;
             }
+        },
+    };
+}
 
-            // Retry exhausted: the gate liked the element but the action still
-            // failed. This is NOT a heal — surface the ORIGINAL error.
-            void lastRetryError;
-            deps.logger.healingFailed({ originalSelector, action: context.action });
+/** Dependencies threaded into the bounded healing pipeline. */
+interface PipelineDeps {
+    deps: ExecutorDeps;
+    deadline: Deadline;
+    classification: FailureClassification;
+    locatorKey: string;
+    originalSelector: string;
+    originalError: unknown;
+    buildLocator: (page: Page, selector: string) => Locator;
+    countVisible: (page: Page, selector: string) => Promise<number>;
+}
+
+/**
+ * The healing pipeline (snapshot -> generate -> gate -> retry), fully bounded by
+ * `p.deadline`. Any operation that would block past the deadline instead rejects
+ * with `HealingDeadlineExceeded`, which the caller turns into a prompt rethrow of
+ * the original error.
+ */
+async function runHealingPipeline(context: FailedActionContext, p: PipelineDeps): Promise<unknown> {
+    const { deps, deadline, classification, locatorKey, originalSelector, originalError } = p;
+
+    // 2. Derive intent + snapshot the live DOM + generate candidates.
+    const original: SignalProfile = signalsFromConstruction(context.descriptor);
+    const snapshot = await deadline.race(captureDomSnapshot(context.page));
+    const generated = generateCandidates(snapshot.filter((el) => el.visible));
+
+    // Bias: if history has a known-good selector for this key, try it first as
+    // an extra candidate. It still must pass the gate.
+    const candidates: ScorableCandidate[] = generated.map((g) => ({
+        selector: g.selector,
+        signals: g.element,
+    }));
+    const historical = deps.history?.lookup(locatorKey);
+    if (historical && !candidates.some((c) => c.selector === historical)) {
+        candidates.unshift({ selector: historical, signals: original });
+    }
+
+    // 3. Score + safety gate (threshold, ambiguity, uniqueness). Each uniqueness
+    // probe is raced against the shared deadline so a slow/hanging probe cannot
+    // extend healing past the budget.
+    const safe = await selectSafeCandidate(
+        original,
+        candidates,
+        (selector) => deadline.race(p.countVisible(context.page, selector)),
+        { confidenceThreshold: deps.config.confidenceThreshold },
+    );
+
+    if (!safe) {
+        deps.logger.healingFailed({ originalSelector, action: context.action });
+        emit(deps.report, {
+            timestamp: new Date().toISOString(),
+            locatorKey,
+            originalSelector,
+            action: context.action,
+            classification,
+            outcome: HealingOutcome.HEALING_FAILED,
+            originalError: messageOf(originalError),
+        });
+        throw originalError;
+    }
+
+    // 4. Retry the REAL action on the healed locator, bounded by retryCount AND
+    // by the remaining budget. The retry's own action timeout is capped to the
+    // time left so a healed-but-slow action cannot run to the caller's full
+    // action timeout; the whole retry is also raced against the deadline.
+    const healedLocator = p.buildLocator(context.page, safe.selector);
+    const attempts = Math.max(1, deps.config.retryCount);
+    let lastRetryError: unknown;
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+        if (deadline.expired()) break;
+        try {
+            const retryArgs = withRetryTimeout(context.action, context.args, deadline.remaining());
+            const result = await deadline.race(context.invoke(healedLocator, retryArgs));
+            // SUCCESS — the action actually worked on the healed element.
+            deps.logger.success({
+                originalSelector,
+                action: context.action,
+                healedSelector: safe.selector,
+                confidence: safe.confidence,
+            });
+            deps.history?.remember(locatorKey, safe.selector);
             emit(deps.report, {
                 timestamp: new Date().toISOString(),
                 locatorKey,
                 originalSelector,
                 action: context.action,
                 classification,
-                outcome: HealingOutcome.HEALING_FAILED,
+                outcome: HealingOutcome.SUCCESS,
                 healedSelector: safe.selector,
                 confidence: safe.confidence,
                 originalError: messageOf(originalError),
             });
-            throw originalError;
-        },
-    };
+            return result;
+        } catch (retryError) {
+            // A deadline hit during retry propagates up to the prompt rethrow.
+            if (retryError instanceof HealingDeadlineExceeded) throw retryError;
+            lastRetryError = retryError;
+        }
+    }
+
+    // Retry exhausted: the gate liked the element but the action still failed.
+    // This is NOT a heal — surface the ORIGINAL error.
+    void lastRetryError;
+    deps.logger.healingFailed({ originalSelector, action: context.action });
+    emit(deps.report, {
+        timestamp: new Date().toISOString(),
+        locatorKey,
+        originalSelector,
+        action: context.action,
+        classification,
+        outcome: HealingOutcome.HEALING_FAILED,
+        healedSelector: safe.selector,
+        confidence: safe.confidence,
+        originalError: messageOf(originalError),
+    });
+    throw originalError;
 }
+
+/**
+ * Cap a retry action's timeout to the remaining healing budget, mirroring the
+ * options-merging rules used for the original probe. `selectOption` and
+ * `dispatchEvent` are intentionally excluded (their argument shapes are
+ * ambiguous) — those are still bounded by the surrounding `deadline.race`.
+ */
+function withRetryTimeout(action: string, args: unknown[], remainingMs: number): unknown[] {
+    if (!Number.isFinite(remainingMs) || remainingMs <= 0) return args;
+    if (!ACTIONS_WITH_TIMEOUT.has(action)) return args;
+    const cap = Math.max(1, Math.floor(remainingMs));
+
+    const lastIndex = args.length - 1;
+    const last = args[lastIndex];
+    const hasOptions = typeof last === 'object' && last !== null && !Array.isArray(last);
+    const options = hasOptions ? { ...(last as Record<string, unknown>) } : {};
+    const existing = options.timeout;
+    if (typeof existing === 'number' && existing > 0 && existing <= cap) return args;
+    options.timeout = cap;
+
+    const next = args.slice();
+    if (hasOptions) next[lastIndex] = options;
+    else next.push(options);
+    return next;
+}
+
+/** Actions that accept a Playwright `{ timeout }` option (safe to cap). */
+const ACTIONS_WITH_TIMEOUT = new Set<string>([
+    'click',
+    'dblclick',
+    'fill',
+    'press',
+    'check',
+    'uncheck',
+    'setChecked',
+    'hover',
+    'focus',
+    'selectText',
+    'tap',
+    'clear',
+    'waitFor',
+    'scrollIntoViewIfNeeded',
+]);
 
 /** Default visible-match counter using Playwright's locator visibility filter. */
 async function defaultCountVisible(page: Page, selector: string): Promise<number> {
