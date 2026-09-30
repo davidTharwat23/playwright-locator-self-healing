@@ -26,6 +26,11 @@ const LOCATOR_FACTORIES = new Set<string>([
 
 export interface PageWrapContext {
     hook: HealingHook;
+    /**
+     * Bounded probe timeout (ms) for the original action attempt, forwarded to
+     * each guarded locator. See `WrapContext.probeTimeoutMs` and ISSUE.md Bug 2.
+     */
+    probeTimeoutMs?: number;
 }
 
 /** Return a proxied Page whose locator factories yield guarded locators. */
@@ -48,6 +53,7 @@ export function wrapPage(page: Page, context: PageWrapContext): Page {
                     page: target,
                     hook: context.hook,
                     descriptor,
+                    probeTimeoutMs: context.probeTimeoutMs,
                 });
             };
         },

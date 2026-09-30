@@ -70,7 +70,7 @@ export function createHealingTest<T extends AnyTest = PlaywrightTest>(params: Cr
 
     const extended = (baseTest.extend as (fixtures: Record<string, unknown>) => unknown)({
         page: async ({ page }: { page: Page }, use: (page: Page) => Promise<void>) => {
-            const healingPage = wrapPage(page, { hook });
+            const healingPage = wrapPage(page, { hook, probeTimeoutMs: config.healTimeoutMs });
             await use(healingPage);
         },
     });

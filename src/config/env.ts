@@ -8,6 +8,7 @@
  *   SELF_HEALING_LOGGING=true|false       -> logging
  *   SELF_HEALING_SAVE_HISTORY=true|false  -> saveHealingHistory
  *   SELF_HEALING_HISTORY_DIR=.healing     -> historyDir
+ *   SELF_HEALING_HEAL_TIMEOUT=5000        -> healTimeoutMs
  *
  * This lets the feature flag work identically locally and in CI with no
  * interactive dependency. Explicit config passed in code takes precedence
@@ -49,6 +50,9 @@ export function configFromEnv(env: EnvSource = process.env): Partial<SelfHealing
 
     const historyDir = env.SELF_HEALING_HISTORY_DIR;
     if (historyDir !== undefined && historyDir.trim() !== '') partial.historyDir = historyDir.trim();
+
+    const healTimeout = parseNum(env.SELF_HEALING_HEAL_TIMEOUT);
+    if (healTimeout !== undefined) partial.healTimeoutMs = healTimeout;
 
     return partial;
 }

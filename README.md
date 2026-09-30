@@ -123,6 +123,7 @@ Explicit options win over environment variables, which win over defaults.
 | `logging` | `SELF_HEALING_LOGGING` | `true` | Emit `[SELF-HEALING]` log blocks. |
 | `saveHealingHistory` | `SELF_HEALING_SAVE_HISTORY` | `true` | Persist successful heals as hints. |
 | `historyDir` | `SELF_HEALING_HISTORY_DIR` | `.healing` | Directory for history + report files. |
+| `healTimeoutMs` | `SELF_HEALING_HEAL_TIMEOUT` | `5000` | Bounded probe timeout (ms) for the original failing attempt so the heal gets a budget under default timeouts. `0` disables the bound. See [Timeouts](#timeouts-and-the-heal-budget). |
 
 ```typescript
 const selfHealing = new SelfHealing({
@@ -235,6 +236,42 @@ On a failed action the engine runs a strict pipeline:
 
 Every attempt is logged and recorded. Healing never hides a real failure: the
 original locator and error are always preserved.
+
+### What can and cannot heal
+
+Scoring only credits signals the **original** locator actually expressed, and
+`id`/`testId` are matched **exactly**. A consequence worth calling out:
+
+- A locator built on **role + accessible name / text / label** heals well when
+  the DOM shifts, because those signals still describe the intended element.
+- A locator built **purely on a changed `#id` or `getByTestId('...')`** scores
+  `0` and **cannot heal** — the one thing the author expressed (that exact id or
+  test id) no longer exists, and inventing a different element would be a guess,
+  not a heal. This is deliberate (conservative safety), but it means the
+  headline "the test id was renamed" case only heals when the author also
+  located by role/name, not when the test id was the *only* signal.
+
+If you rely on test ids, prefer pairing them with a role/name so a rename
+remains healable.
+
+### Timeouts and the heal budget
+
+Healing runs only **after** the original action throws. If the original action
+is allowed to consume the entire action/test timeout, the enclosing test times
+out before the heal can snapshot the DOM and retry — so a valid heal would never
+apply under default timeouts.
+
+To prevent that race, when healing is enabled the guard runs the **original
+attempt** with an internal bounded probe timeout (`healTimeoutMs`, default
+`5000`ms), leaving the rest of the budget for the snapshot + retry. The retry
+against the healed locator uses your **original** timeout, untouched. A caller
+timeout that is already smaller than `healTimeoutMs` is respected and never
+widened. Set `healTimeoutMs: 0` to disable the bound and keep the caller's
+original timeout on the first attempt (legacy behaviour).
+
+Interaction with Playwright's own timeouts: keep `healTimeoutMs` comfortably
+below your test `timeout` (and any `actionTimeout`) so both the probe and the
+retry fit inside the test budget.
 
 ## Logging
 

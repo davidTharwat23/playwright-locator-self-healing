@@ -1,6 +1,6 @@
 {
     "name": "playwright-locator-self-healing",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Conservative, safety-first self-healing for Playwright locators. Heals broken locators without hiding real E2E/business-flow failures.",
     "keywords": [
         "playwright",
@@ -45,6 +45,7 @@
         "typecheck": "tsc --noEmit",
         "test": "vitest run",
         "test:watch": "vitest",
+        "test:e2e": "playwright test",
         "prepublishOnly": "npm run build"
     },
     "peerDependencies": {
