@@ -1,6 +1,6 @@
 {
     "name": "playwright-locator-self-healing",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "Conservative, safety-first self-healing for Playwright locators. Heals broken locators without hiding real E2E/business-flow failures.",
     "keywords": [
         "playwright",

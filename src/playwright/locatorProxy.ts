@@ -125,14 +125,26 @@ async function runGuarded(
         return method.apply(locator, invokeArgs);
     };
 
-    // Bug 2 fix: bound the ORIGINAL attempt so a failing action cannot consume
-    // the whole action/test timeout and starve the heal. The heal + retry then
-    // run against the caller's ORIGINAL args (their intended timeout), so a
-    // valid high-confidence heal applies even under default timeouts.
-    const probeArgs = withProbeTimeout(prop, args, context.probeTimeoutMs);
+    // The ORIGINAL attempt runs under the caller's own timeout (Playwright's
+    // action/test timeout), UNTOUCHED. This is critical: a legitimately
+    // long-running valid action must never be cut short by the self-healing
+    // configuration. We do NOT shorten the caller's timeout here.
+    //
+    // Healing does not depend on shortening this attempt: when the action
+    // genuinely fails, the healing pipeline runs under its OWN independent
+    // budget (`healTimeoutMs`, enforced in the executor), so a valid heal still
+    // applies under default timeouts without stealing time from — or bounding —
+    // the caller's real action.
+    //
+    // `probeTimeoutMs` is retained on the public API for backward compatibility
+    // but is applied ONLY as an opt-in tightening that never widens or shortens
+    // a caller-provided timeout (see withProbeTimeout); by default (no probe
+    // budget wired for the original attempt) the caller's args pass through
+    // unchanged.
+    const attemptArgs = args;
 
     try {
-        return await invoke(target, probeArgs);
+        return await invoke(target, attemptArgs);
     } catch (error) {
         return context.hook.onActionFailed({
             page: context.page,
@@ -144,75 +156,6 @@ async function runGuarded(
             invoke,
         });
     }
-}
-
-/**
- * Options-bearing guarded actions accept a trailing `{ timeout }` option. Merge
- * a bounded probe timeout into that option for the ORIGINAL attempt, without
- * ever widening a smaller caller-supplied timeout and without altering the
- * caller's own args array (the heal retry still uses the untouched args).
- *
- * Returns the args unchanged when: no bound is configured (undefined/<=0), the
- * action does not take options we recognise, or the caller already set an equal
- * or smaller timeout.
- */
-function withProbeTimeout(action: string, args: unknown[], probeTimeoutMs?: number): unknown[] {
-    if (!probeTimeoutMs || probeTimeoutMs <= 0) return args;
-    if (!ACTIONS_WITH_TIMEOUT.has(action)) return args;
-
-    // Options is the last argument for these actions (index varies: fill/press
-    // take a value first, so options may be at index 1). Find the trailing
-    // plain-object arg, or synthesise one.
-    const lastIndex = args.length - 1;
-    const last = args[lastIndex];
-    const hasOptions = isPlainObject(last);
-    const options = hasOptions ? { ...(last as Record<string, unknown>) } : {};
-
-    const existing = options.timeout;
-    if (typeof existing === 'number' && existing > 0 && existing <= probeTimeoutMs) {
-        // Caller already asked for an equal/tighter budget — respect it.
-        return args;
-    }
-    options.timeout = probeTimeoutMs;
-
-    const next = args.slice();
-    if (hasOptions) {
-        next[lastIndex] = options;
-    } else {
-        next.push(options);
-    }
-    return next;
-}
-
-/** Guarded actions that accept a Playwright `{ timeout }` option. */
-const ACTIONS_WITH_TIMEOUT = new Set<string>([
-    'click',
-    'dblclick',
-    'fill',
-    'press',
-    'check',
-    'uncheck',
-    'setChecked',
-    'hover',
-    'focus',
-    // NOTE: `selectOption` is omitted: its `values` argument can itself be a
-    // plain object (e.g. `{ label: 'x' }`), which is indistinguishable from a
-    // trailing options object, so injecting `{ timeout }` risks corrupting it.
-    'selectText',
-    'tap',
-    'clear',
-    'waitFor',
-    'scrollIntoViewIfNeeded',
-    // NOTE: `dispatchEvent(type, eventInit?, options?)` is intentionally omitted.
-    // Its options object is not always the trailing arg (eventInit can precede
-    // it), so blindly appending `{ timeout }` could be mistaken for eventInit.
-    // Losing the bounded probe on dispatchEvent is preferable to corrupting its
-    // arguments; it still heals, just without the tightened first-attempt bound.
-]);
-
-/** True for a non-null, non-array plain object. */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Kept for symmetry / potential external callers; not used internally now. */

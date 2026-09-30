@@ -123,7 +123,7 @@ Explicit options win over environment variables, which win over defaults.
 | `logging` | `SELF_HEALING_LOGGING` | `true` | Emit `[SELF-HEALING]` log blocks. |
 | `saveHealingHistory` | `SELF_HEALING_SAVE_HISTORY` | `true` | Persist successful heals as hints. |
 | `historyDir` | `SELF_HEALING_HISTORY_DIR` | `.healing` | Directory for history + report files. |
-| `healTimeoutMs` | `SELF_HEALING_HEAL_TIMEOUT` | `5000` | Bounded probe timeout (ms) for the original failing attempt so the heal gets a budget under default timeouts. `0` disables the bound. See [Timeouts](#timeouts-and-the-heal-budget). |
+| `healTimeoutMs` | `SELF_HEALING_HEAL_TIMEOUT` | `5000` | Overall budget (ms) for the healing work (snapshot + uniqueness probes + retry) after an eligible failure. Does **not** shorten the original action. On expiry, the original error is rethrown. `0` = unbounded. See [Timeouts](#timeouts-and-the-heal-budget). |
 
 ```typescript
 const selfHealing = new SelfHealing({
@@ -256,22 +256,61 @@ remains healable.
 
 ### Timeouts and the heal budget
 
-Healing runs only **after** the original action throws. If the original action
-is allowed to consume the entire action/test timeout, the enclosing test times
-out before the heal can snapshot the DOM and retry — so a valid heal would never
-apply under default timeouts.
+There are **two independent timeout domains**. Keeping them separate is what
+lets self-healing bound its own work without ever interfering with your tests.
 
-To prevent that race, when healing is enabled the guard runs the **original
-attempt** with an internal bounded probe timeout (`healTimeoutMs`, default
-`5000`ms), leaving the rest of the budget for the snapshot + retry. The retry
-against the healed locator uses your **original** timeout, untouched. A caller
-timeout that is already smaller than `healTimeoutMs` is respected and never
-widened. Set `healTimeoutMs: 0` to disable the bound and keep the caller's
-original timeout on the first attempt (legacy behaviour).
+**1. Playwright's action / test timeout (yours, untouched).**
+The original locator action runs entirely under Playwright's own timeouts — the
+per-action `timeout` you pass (e.g. `click({ timeout })`), the project
+`actionTimeout`, and the enclosing test `timeout`. Self-healing does **not**
+shorten, cap, or otherwise change this. A legitimately long-running valid action
+runs to completion exactly as it would without the package.
 
-Interaction with Playwright's own timeouts: keep `healTimeoutMs` comfortably
-below your test `timeout` (and any `actionTimeout`) so both the probe and the
-retry fit inside the test budget.
+**2. The self-healing budget: `healTimeoutMs` (default `5000`).**
+This applies **only after** an eligible action failure — i.e. only on the
+healing path. It is a single overall budget for the whole healing pipeline:
+
+- the DOM snapshot,
+- every uniqueness probe in the safety gate, and
+- the retry of the action on the healed locator.
+
+Whatever combination of those runs, the total healing work is bounded by
+`healTimeoutMs`. When the budget expires, healing stops and the **original
+Playwright error is rethrown promptly** (reported as `HEALING_FAILED`). Set
+`healTimeoutMs: 0` to make the budget unbounded (not recommended in CI).
+
+**How the two combine on a broken locator.**
+Total time ≈ *(the original action's own timeout)* + *(≤ `healTimeoutMs` of
+healing)*. The original wait is Playwright's, under your control; only the
+healing portion is governed by `healTimeoutMs`.
+
+**Tradeoff — no explicit action timeout.**
+Healing can only begin **after** the original action has actually failed, and an
+action only "fails" once its timeout elapses. So if you call an action with no
+explicit `timeout`, a broken locator must first wait out Playwright's default
+action timeout (30s unless you configured `actionTimeout`) before healing even
+starts. This is intentional: the package cannot know an action will fail in
+advance, and shortening the original attempt would risk interrupting a valid
+slow action. If you want a broken locator to fail (and then heal) quickly, pass
+an explicit short `timeout` on that call — that timeout is honoured as-is.
+
+**Limitation — the budget bounds waiting, not the browser.**
+Enforcing the budget stops the healing flow from *waiting* past `healTimeoutMs`
+and hands control back immediately; it does **not** cancel an already-running
+Playwright operation (Playwright exposes no cancellation for an in-flight
+`count()`/action). A raced operation may briefly finish in the background, but
+it is irrelevant to the test outcome — healing has already stopped and rethrown
+the original error, and the stray operation cannot extend your test.
+
+**Guidance.** Keep `healTimeoutMs` comfortably below your test `timeout` so the
+healing budget always fits inside the test budget after the original action has
+failed.
+
+> **Deprecated: `probeTimeoutMs`.** An earlier internal mechanism shortened the
+> original attempt to give healing a head start. It has been superseded by the
+> independent `healTimeoutMs` budget and no longer shortens the original action
+> — it is retained only for backward compatibility and has no effect on the
+> original attempt's timeout. Use `healTimeoutMs` to bound healing.
 
 ## Logging
 
