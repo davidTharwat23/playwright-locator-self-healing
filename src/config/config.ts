@@ -33,6 +33,23 @@ export interface SelfHealingConfig {
      * process working directory. Defaults to '.healing'.
      */
     historyDir: string;
+    /**
+     * Dedicated time budget, in milliseconds, for the healing work AND for the
+     * bounded probe of the ORIGINAL action when healing is enabled.
+     *
+     * Why this exists (see ISSUE.md Bug 2): healing only runs after the original
+     * action throws. If the original action is allowed to consume the whole
+     * action/test timeout budget, the enclosing test timeout fires before the
+     * heal can snapshot the DOM and retry — so a valid, high-confidence heal
+     * never applies under default timeouts. To prevent that race, when healing
+     * is enabled the guard runs the original action with an internal probe
+     * timeout of at most this value (unless the caller passed a smaller explicit
+     * timeout), leaving the rest of the budget for the heal + retry.
+     *
+     * Defaults to 5000ms. Set to 0 to disable the bounded probe and preserve the
+     * caller's original timeout untouched (legacy behaviour).
+     */
+    healTimeoutMs: number;
 }
 
 /** The built-in defaults. `enabled` is false: the package is inert by default. */
@@ -43,6 +60,7 @@ export const DEFAULT_CONFIG: SelfHealingConfig = {
     logging: true,
     saveHealingHistory: true,
     historyDir: '.healing',
+    healTimeoutMs: 5000,
 };
 
 /**
@@ -68,10 +86,21 @@ function clampConfig(config: SelfHealingConfig): SelfHealingConfig {
         ...config,
         confidenceThreshold: clamp(config.confidenceThreshold, 0, 1),
         retryCount: Math.max(0, Math.floor(config.retryCount)),
+        healTimeoutMs: clampHealTimeout(config.healTimeoutMs),
     };
 }
 
 function clamp(value: number, min: number, max: number): number {
     if (Number.isNaN(value)) return min;
     return Math.min(max, Math.max(min, value));
+}
+
+/**
+ * Keep the heal timeout non-negative and integral. A NaN or negative value
+ * falls back to the default so bad input cannot break the bounded probe. 0 is
+ * a valid value meaning "no bounded probe" (see healTimeoutMs docs).
+ */
+function clampHealTimeout(value: number): number {
+    if (Number.isNaN(value)) return DEFAULT_CONFIG.healTimeoutMs;
+    return Math.max(0, Math.floor(value));
 }
