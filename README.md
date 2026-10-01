@@ -254,6 +254,17 @@ Scoring only credits signals the **original** locator actually expressed, and
 If you rely on test ids, prefer pairing them with a role/name so a rename
 remains healable.
 
+### Chained locators
+
+When a locator is **chained** (e.g. `page.locator('.list').getByRole('button',
+{ name: 'Save' })`), healing reasons about the intent of the **first** factory
+in the chain, not the final segment. So if the *terminal* segment is the part
+that breaks, the engine may not have enough intent to heal it and will
+**safely refuse** — it rethrows the original error rather than guessing. It
+never heals the wrong element. Locators that break at their first/outer segment,
+and single-segment locators, heal normally. (Per-segment intent for deep chains
+is a potential future enhancement.)
+
 ### Timeouts and the heal budget
 
 There are **two independent timeout domains**. Keeping them separate is what

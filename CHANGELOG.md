@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-09-30
+
+### Fixed
+
+- **Native elements can now heal via `getByRole`.** The DOM snapshot previously
+  recorded an element's role from the explicit `role` attribute only. Native
+  interactive elements (`<button>`, `<select>`, `<a href>`, `<input>`,
+  `<textarea>`) carry no explicit `role`, so a `getByRole(...)` locator — the
+  most common Playwright pattern — scored at most 0.5 against them and could
+  never clear the confidence threshold to heal. The snapshot now derives the
+  **implicit ARIA role** for these native elements (e.g. `<button>` → `button`,
+  `<select>` → `combobox`, `<a href>` → `link`, `<input type=checkbox>` →
+  `checkbox`, `<textarea>` → `textbox`). An explicit `role` attribute still
+  wins, and ambiguous cases (`<select multiple>`, `<input type=date>`, `<a>`
+  without `href`) yield no role rather than guessing. No change to the
+  confidence threshold, signal weights, scorer, or timeout model.
+
 ## [0.3.0] - 2026-09-30
 
 ### Fixed

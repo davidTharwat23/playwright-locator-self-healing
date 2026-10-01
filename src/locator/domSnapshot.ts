@@ -86,6 +86,69 @@ export async function captureDomSnapshot(page: Page, maxElements = 400): Promise
                 return parts.join('>');
             };
 
+            // Role resolution: an EXPLICIT `role` attribute always wins. When
+            // absent, derive the IMPLICIT ARIA role for the common native
+            // interactive elements so a `getByRole(...)` intent can match a
+            // native <button>/<select>/<a>/<input>/<textarea> (which carry no
+            // explicit role). Conservative on purpose — only unambiguous
+            // mappings per the HTML-AAM; anything uncertain yields no role
+            // rather than guessing.
+            const implicitRoleOf = (el: Element): string | undefined => {
+                const tag = el.tagName.toLowerCase();
+                switch (tag) {
+                    case 'button':
+                        return 'button';
+                    case 'a':
+                        // Only a link when it is actually a hyperlink.
+                        return el.hasAttribute('href') ? 'link' : undefined;
+                    case 'select': {
+                        // <select multiple> or size>1 is a listbox, not a
+                        // combobox — leave ambiguous ones unmapped.
+                        const multiple = el.hasAttribute('multiple');
+                        const sizeAttr = el.getAttribute('size');
+                        const size = sizeAttr ? parseInt(sizeAttr, 10) : 0;
+                        return multiple || size > 1 ? undefined : 'combobox';
+                    }
+                    case 'textarea':
+                        return 'textbox';
+                    case 'input': {
+                        const type = (el.getAttribute('type') || 'text').toLowerCase();
+                        switch (type) {
+                            case 'checkbox':
+                                return 'checkbox';
+                            case 'radio':
+                                return 'radio';
+                            case 'button':
+                            case 'submit':
+                            case 'reset':
+                            case 'image':
+                                return 'button';
+                            case 'range':
+                                return 'slider';
+                            case 'text':
+                            case 'email':
+                            case 'tel':
+                            case 'url':
+                            case 'search':
+                            case 'password':
+                                return 'textbox';
+                            // Other input types (date, color, file, hidden, …)
+                            // have ambiguous/varied roles — leave unmapped.
+                            default:
+                                return undefined;
+                        }
+                    }
+                    default:
+                        return undefined;
+                }
+            };
+
+            const roleOf = (el: Element): string | undefined => {
+                const explicit = el.getAttribute('role');
+                if (explicit && explicit.trim()) return explicit.trim();
+                return implicitRoleOf(el);
+            };
+
             const nodes = Array.from(document.querySelectorAll(SELECTOR)).slice(0, cap);
             const result: Array<Record<string, unknown>> = [];
 
@@ -97,7 +160,7 @@ export async function captureDomSnapshot(page: Page, maxElements = 400): Promise
                     tag: el.tagName.toLowerCase(),
                     id: el.id || undefined,
                     testId: el.getAttribute('data-testid') || el.getAttribute('data-test-id') || undefined,
-                    role: el.getAttribute('role') || undefined,
+                    role: roleOf(el) || undefined,
                     accessibleName: accessibleNameOf(el) || undefined,
                     text: text ? text.slice(0, 100) : undefined,
                     label: labelTextOf(el) || undefined,

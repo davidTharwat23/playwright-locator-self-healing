@@ -1,0 +1,10 @@
+# Normalize line endings to LF for text files to avoid CRLF churn on Windows.
+* text=auto eol=lf
+
+# Explicitly treat common source/text types as LF.
+*.ts text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
